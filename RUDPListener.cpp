@@ -52,6 +52,17 @@ void RUDPListener::Update()
 	UpdatePendingMessages();
 	CheckOutgoingMessages();
 	CheckTimeout();
+	SendHeartbeats();
+}
+
+const char* RUDPListener::GetListenerIP() const
+{
+	return address;
+}
+
+int RUDPListener::GetListenerPort() const
+{
+	return port;
 }
 
 /*
@@ -66,6 +77,11 @@ void RUDPListener::SetMessageTimeout(std::chrono::milliseconds timeout)
 void RUDPListener::SetConnectionTimeout(std::chrono::milliseconds timeout)
 {
 	CONNECTION_TIMEOUT = timeout;
+}
+
+void RUDPListener::SetHeartbeatInterval(std::chrono::milliseconds interval)
+{
+	HEARTBEAT_INTERVAL = interval;
 }
 
 /*
@@ -87,6 +103,28 @@ RUDPListener::ConnectionUUID RUDPListener::GetConnectionUUID(int position) const
 size_t RUDPListener::GetTotalConnections() const
 {
 	return connectionMap.size();
+}
+
+const char* RUDPListener::GetConnectionIP(ConnectionUUID uuid) const
+{
+	auto entry = connectionMap.find(uuid);
+
+	if (entry != connectionMap.end())
+	{
+		return entry->second->ip;
+	}
+	return nullptr; // Return nullptr if the connection does not exist
+}
+
+int RUDPListener::GetConnectionPort(ConnectionUUID uuid) const
+{
+	auto entry = connectionMap.find(uuid);
+
+	if (entry != connectionMap.end())
+	{
+		return entry->second->port;
+	}
+	return -1; // Return -1 if the connection does not exist
 }
 
 /*
@@ -206,6 +244,12 @@ void RUDPListener::ReadIncomingMessages()
 				ReadHandshakeMessage(udp_message);
 				break;
 			}
+
+			case MSG_HEARTBEAT:
+			{
+				ReadHeartbeatMessage(udp_message);
+				break;
+			}
 		}
 
 		agk::DeleteNetworkMessage(udp_message);	//Needs to be deleted
@@ -286,6 +330,22 @@ void RUDPListener::CheckTimeout()
 		}
 		else
 			entry++;
+	}
+}
+
+void RUDPListener::SendHeartbeats()
+{
+	// Iterate through all connections and send heartbeat messages
+	for (auto& entry : connectionMap)
+	{
+		Connection* connection = entry.second;
+
+		std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+
+		if (std::chrono::duration_cast<std::chrono::milliseconds>(now - connection->lastUpdate) >= HEARTBEAT_INTERVAL)
+		{
+			SendHeartbeat(connection, connection->outboundSequence++); //Heartbeat is just a handshake
+		}
 	}
 }
 
@@ -412,6 +472,21 @@ void RUDPListener::ReadHandshakeMessage(int message)
 	AddConnection(uuid, connection);
 }
 
+void RUDPListener::ReadHeartbeatMessage(int message)
+{
+	ConnectionUUID uuid = agk::GetNetworkMessageString(message);
+	int sequence = agk::GetNetworkMessageInteger(message);
+	auto entry = connectionMap.find(uuid);
+
+	// If the connection exists, update its last update time
+	if (entry != connectionMap.end())
+	{
+		Connection* connection = entry->second;
+		connection->inboundSequence++; //Increment sequence for next message
+		connection->lastUpdate = std::chrono::steady_clock::now(); //Update last update time
+	}
+}
+
 /*
 *	Send Functions
 */
@@ -450,6 +525,16 @@ void RUDPListener::SendHandshake(Connection* connection, int sequence) const
 	// Send an acknowledgment back to the sender
 	unsigned int message = agk::CreateNetworkMessage();
 	agk::AddNetworkMessageByte(message, MessageType::MSG_HANDSHAKE);
+	agk::AddNetworkMessageString(message, listenerUUID);
+	agk::AddNetworkMessageInteger(message, sequence);
+	agk::SendUDPNetworkMessage(AGKListener, message, connection->ip, connection->port);
+}
+
+void RUDPListener::SendHeartbeat(Connection* connection, int sequence) const
+{
+	// Send an acknowledgment back to the sender
+	unsigned int message = agk::CreateNetworkMessage();
+	agk::AddNetworkMessageByte(message, MessageType::MSG_HEARTBEAT);
 	agk::AddNetworkMessageString(message, listenerUUID);
 	agk::AddNetworkMessageInteger(message, sequence);
 	agk::SendUDPNetworkMessage(AGKListener, message, connection->ip, connection->port);

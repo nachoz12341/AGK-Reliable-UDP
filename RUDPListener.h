@@ -11,14 +11,20 @@ class RUDPListener {
 		RUDPListener(const char* address, int port);
 		~RUDPListener();
 		void Update();
+		const char* GetListenerIP() const;
+		int GetListenerPort() const;
 
 		//Settings
 		void SetMessageTimeout(std::chrono::milliseconds timeout);
 		void SetConnectionTimeout(std::chrono::milliseconds timeout);
+		void SetHeartbeatInterval(std::chrono::milliseconds interval);
 
 		//Active Connections
 		ConnectionUUID GetConnectionUUID(int position) const;
 		size_t GetTotalConnections() const;
+		const char* GetConnectionIP(ConnectionUUID uuid) const;
+		int GetConnectionPort(ConnectionUUID uuid) const;
+
 
 		//Public Methods
 		void Connect(const char* ip, int port) const;	//Sends connect request won't actually connect until we receive handshake
@@ -30,12 +36,13 @@ class RUDPListener {
 
 	private:
 		//Message header
-		typedef enum MessageType {
-			MSG_DATA,	//Data message
-			MSG_ACK,	//Acknowledgment message
-			MSG_CONNECT,	//Connection message
-			MSG_DISCONNECT,	//Disconnection message
-			MSG_HANDSHAKE
+		typedef enum MessageType {			
+			MSG_CONNECT,	// Connection message
+			MSG_DISCONNECT,	// Disconnection message
+			MSG_HANDSHAKE,	// Received after a connection message
+			MSG_HEARTBEAT,	// Keep-alive message
+			MSG_DATA,		// Data message
+			MSG_ACK,		// Acknowledgment message
 		} MessageType;
 
 		typedef struct Packet {
@@ -100,6 +107,7 @@ class RUDPListener {
 		int port;
 		unsigned int AGKListener;
 
+		std::chrono::milliseconds HEARTBEAT_INTERVAL = std::chrono::milliseconds(16); //How often to send heartbeat messages
 		std::chrono::milliseconds OUTBOUND_TIMEOUT = std::chrono::milliseconds(100); //Timeout for outbound packets
 		std::chrono::milliseconds CONNECTION_TIMEOUT = std::chrono::milliseconds(10000); //Timeout for connection
 		
@@ -108,6 +116,7 @@ class RUDPListener {
 		void UpdatePendingMessages();
 		void CheckOutgoingMessages();
 		void CheckTimeout();
+		void SendHeartbeats();
 
 		//Read Messages by header type
 		void ReadDataMessage(int message);
@@ -115,11 +124,13 @@ class RUDPListener {
 		void ReadConnectMessage(int message);
 		void ReadDisconnectMessage(int message);
 		void ReadHandshakeMessage(int message);
+		void ReadHeartbeatMessage(int message);
 
 		//Send functions
 		void SendAcknowledgment(Connection* connection, int sequence) const;
 		void SendDataMessage(Connection* connection, Packet* packet) const;
 		void SendHandshake(Connection* connection, int sequence) const;
+		void SendHeartbeat(Connection* connection, int sequence) const;
 
 		//Connection management
 		bool AddConnection(ConnectionUUID uuid, Connection* connection);
