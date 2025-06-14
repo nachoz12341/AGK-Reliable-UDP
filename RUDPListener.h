@@ -18,6 +18,7 @@ class RUDPListener {
 
 		//Active Connections
 		ConnectionUUID GetConnectionUUID(int position) const;
+		unsigned int GetConnectionID() const;
 		size_t GetTotalConnections() const;
 
 		//Public Methods

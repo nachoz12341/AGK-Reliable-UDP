@@ -84,6 +84,11 @@ RUDPListener::ConnectionUUID RUDPListener::GetConnectionUUID(int position) const
 	return nullptr; // Return nullptr if position is invalid
 }
 
+unsigned int RUDPListener::GetConnectionID() const
+{
+	return AGKListener; // Return the ID of the AGK listener
+}
+
 size_t RUDPListener::GetTotalConnections() const
 {
 	return connectionMap.size();
