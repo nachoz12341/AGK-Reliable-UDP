@@ -70,7 +70,7 @@ while (memblock != -1)
 
 ## License
 
-GPL v3 License. See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE) for details.
 
 ## Credits
 
