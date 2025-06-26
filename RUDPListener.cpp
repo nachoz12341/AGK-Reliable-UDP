@@ -100,6 +100,19 @@ RUDPListener::ConnectionUUID RUDPListener::GetConnectionUUID(int position) const
 	return nullptr; // Return nullptr if position is invalid
 }
 
+RUDPListener::ConnectionUUID RUDPListener::GetConnectionByAddress(const char* ip, const int port) const
+{
+	for (const auto& entry : connectionMap)
+	{
+		Connection* connection = entry.second;
+		if (std::strcmp(connection->ip, ip) == 0 && connection->port == port)
+		{
+			return entry.first; // Return the UUID of the connection with the given IP and port
+		}
+	}
+	return nullptr; // Return nullptr if no matching connection is found
+}
+
 unsigned int RUDPListener::GetConnectionID() const
 {
 	return AGKListener; // Return the ID of the AGK listener

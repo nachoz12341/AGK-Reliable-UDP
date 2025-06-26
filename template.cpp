@@ -17,16 +17,26 @@ void app::Begin(void)
 	agk::SetScissor(0,0,0,0);
 
 	rListener = new RUDPListener("anyip4", 30000);
-	destinationIP = "192.168.1.8";	//Fill in with your destination IP
+	destinationIP = "192.168.1.11";	//Fill in with your destination IP
+	rListener->Connect(destinationIP.c_str(), 30000); // Connect to the listener
 }
 
 int app::Loop (void)
 {
-	std::string connectMessage = "Press space to connect to " + destinationIP;
+	std::string connectMessage = "Connecting to: " + destinationIP;
 	std::string activeMessage = "Active Connections: " + std::to_string(rListener->GetTotalConnections());
 
-	agk::Print(connectMessage.c_str());
-	agk::Print(activeMessage.c_str());
+	
+
+	//Continue trying to connect until successful
+	if (rListener->GetConnectionByAddress(destinationIP.c_str(), 30000) == nullptr)
+	{
+		rListener->Connect(destinationIP.c_str(), 30000); // Connect to the listener
+	}
+	else
+	{
+		connectMessage = "Connected to: " + destinationIP;
+	}
 
 	if (rListener->GetTotalConnections() > 0)
 	{
@@ -43,15 +53,12 @@ int app::Loop (void)
 			}
 		}
 	}
-	else
-	{
-		if (agk::GetRawKeyPressed(32))	//Try to connect if you press space
-		{
-			rListener->Connect(destinationIP.c_str(), 30000); // Connect to the listener
-		}
-	}
 
 	rListener->Update();	//Call every frame
+
+	agk::Print(connectMessage.c_str());
+	agk::Print(activeMessage.c_str());
+
 	agk::Sync();
 	return 0; // return 1 to close app
 }
