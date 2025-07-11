@@ -65,6 +65,11 @@ int RUDPListener::GetListenerPort() const
 	return port;
 }
 
+RUDPListener::ConnectionUUID RUDPListener::GetListenerUUID() const
+{
+	return listenerUUID;
+}
+
 /*
  * Settings
  */
@@ -113,7 +118,7 @@ RUDPListener::ConnectionUUID RUDPListener::GetConnectionByAddress(const char* ip
 	return nullptr; // Return nullptr if no matching connection is found
 }
 
-unsigned int RUDPListener::GetConnectionID() const
+unsigned int RUDPListener::GetAGKID() const
 {
 	return AGKListener; // Return the ID of the AGK listener
 }

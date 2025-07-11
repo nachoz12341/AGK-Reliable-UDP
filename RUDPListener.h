@@ -13,6 +13,7 @@ class RUDPListener {
 		void Update();
 		const char* GetListenerIP() const;
 		int GetListenerPort() const;
+		ConnectionUUID GetListenerUUID() const;
 
 		//Settings
 		void SetMessageTimeout(std::chrono::milliseconds timeout);
@@ -22,7 +23,7 @@ class RUDPListener {
 		//Active Connections
 		ConnectionUUID GetConnectionUUID(int position) const;
 		ConnectionUUID GetConnectionByAddress(const char* ip, int port) const; //Returns the UUID of the connection by IP and port
-		unsigned int GetConnectionID() const;
+		unsigned int GetAGKID() const;
 		size_t GetTotalConnections() const;
 		const char* GetConnectionIP(ConnectionUUID uuid) const;
 		int GetConnectionPort(ConnectionUUID uuid) const;
