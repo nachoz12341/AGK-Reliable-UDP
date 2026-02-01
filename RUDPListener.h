@@ -67,13 +67,18 @@ class RUDPListener {
 			int outboundSequence;
 
 			std::chrono::steady_clock::time_point lastUpdate;
+			std::chrono::steady_clock::time_point lastHeartbeatSent;
 
 			PacketList readyPackets;	//Packets ready to be read
 			PacketList pendingPackets;	//Packets waiting for earlier messages
 			PacketList outboundPackets;	//Packets we've sent to this client
 
 			Connection(const std::string ip, int port)
-				: ip(ip), port(port), inboundSequence(0), outboundSequence(0) {}
+				: ip(ip), port(port), inboundSequence(0), outboundSequence(0) 
+			{
+				lastUpdate = std::chrono::steady_clock::now();
+				lastHeartbeatSent = std::chrono::steady_clock::now();
+			}
 			~Connection() 
 			{
 				for (Packet* packet : readyPackets) 

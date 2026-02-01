@@ -363,10 +363,10 @@ void RUDPListener::SendHeartbeats()
 
 		std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
 
-		if (std::chrono::duration_cast<std::chrono::milliseconds>(now - connection->lastUpdate) >= HEARTBEAT_INTERVAL)
+		if (std::chrono::duration_cast<std::chrono::milliseconds>(now - connection->lastHeartbeatSent) >= HEARTBEAT_INTERVAL)
 		{
-			SendHeartbeat(connection, connection->outboundSequence++); //Heartbeat is just a handshake
-			connection->lastUpdate = now; //Update lastUpdate after sending heartbeat
+			SendHeartbeat(connection, connection->outboundSequence++);
+			connection->lastHeartbeatSent = now; //Update lastHeartbeatSent after sending
 		}
 	}
 }
@@ -484,14 +484,24 @@ void RUDPListener::ReadHandshakeMessage(int message)
 	int sequence = agk::GetNetworkMessageInteger(message);
 	auto entry = connectionMap.find(uuid);
 
-	// If the connection does not exist, create a new one
-	std::string ip = agk::GetNetworkMessageFromIP(message);
-	int port = agk::GetNetworkMessageFromPort(message);
+	// If the connection already exists, just update it
+	if (entry != connectionMap.end())	
+	{
+		Connection* connection = entry->second;
+		connection->inboundSequence++; //Increment sequence for next message
+		connection->lastUpdate = std::chrono::steady_clock::now(); //Update last update time
+	}
+	else
+	{
+		// If the connection does not exist, create a new one
+		std::string ip = agk::GetNetworkMessageFromIP(message);
+		int port = agk::GetNetworkMessageFromPort(message);
 
-	Connection* connection = new Connection(ip, port);
-	connection->inboundSequence++; //Increment sequence for next message
-	connection->lastUpdate = std::chrono::steady_clock::now(); //Update last update time
-	AddConnection(uuid, connection);
+		Connection* connection = new Connection(ip, port);
+		connection->inboundSequence++; //Increment sequence for next message
+		connection->lastUpdate = std::chrono::steady_clock::now(); //Update last update time
+		AddConnection(uuid, connection);
+	}
 }
 
 void RUDPListener::ReadHeartbeatMessage(int message)
