@@ -3,15 +3,16 @@
 
 #include <chrono>
 #include <map>
+#include <string>
 #include <vector>
 
 class RUDPListener {
 	public:
-		typedef char* ConnectionUUID;
-		RUDPListener(const char* address, int port);
+		typedef std::string ConnectionUUID;
+		RUDPListener(const std::string address, int port);
 		~RUDPListener();
 		void Update();
-		const char* GetListenerIP() const;
+		const std::string GetListenerIP() const;
 		int GetListenerPort() const;
 		ConnectionUUID GetListenerUUID() const;
 
@@ -22,15 +23,15 @@ class RUDPListener {
 
 		//Active Connections
 		ConnectionUUID GetConnectionUUID(int position) const;
-		ConnectionUUID GetConnectionByAddress(const char* ip, int port) const; //Returns the UUID of the connection by IP and port
+		ConnectionUUID GetConnectionByAddress(const std::string ip, int port) const; //Returns the UUID of the connection by IP and port
 		unsigned int GetAGKID() const;
 		size_t GetTotalConnections() const;
-		const char* GetConnectionIP(ConnectionUUID uuid) const;
+		const std::string GetConnectionIP(ConnectionUUID uuid) const;
 		int GetConnectionPort(ConnectionUUID uuid) const;
 
 
 		//Public Methods
-		void Connect(const char* ip, int port) const;	//Sends connect request won't actually connect until we receive handshake
+		void Connect(const std::string ip, int port) const;	//Sends connect request won't actually connect until we receive handshake
 		void Disconnect(ConnectionUUID uuid);
 		void SendMessage(ConnectionUUID uuid, unsigned int memblock);
 		int GetMessage(ConnectionUUID uuid);
@@ -52,7 +53,7 @@ class RUDPListener {
 			ConnectionUUID uuid;	//UUID of the connection
 			int sequence;
 			int size;
-			const char* hash;
+			std::string hash;
 			unsigned int data;
 			std::chrono::steady_clock::time_point timestamp;
 		} Packet;
@@ -60,7 +61,7 @@ class RUDPListener {
 		typedef std::vector<Packet*> PacketList;
 
 		typedef struct Connection {
-			const char* ip;
+			const std::string ip;
 			int port;
 			int inboundSequence;
 			int outboundSequence;
@@ -71,7 +72,7 @@ class RUDPListener {
 			PacketList pendingPackets;	//Packets waiting for earlier messages
 			PacketList outboundPackets;	//Packets we've sent to this client
 
-			Connection(const char* ip, int port)
+			Connection(const std::string ip, int port)
 				: ip(ip), port(port), inboundSequence(0), outboundSequence(0) {}
 			~Connection() 
 			{
@@ -91,27 +92,20 @@ class RUDPListener {
 				}
 			}
 		}Connection;
-
-		//Key's being a pointer need to be compared by value
-		struct cmp_str {
-			bool operator()(const char* a, const char* b) const {
-				return std::strcmp(a, b) < 0;
-			}
-		};
 		
-		typedef std::map<ConnectionUUID, Connection*, cmp_str> ConnectionMap;
+		typedef std::map<ConnectionUUID, Connection*> ConnectionMap;
 
 
 
 		//Listener variables
 		ConnectionMap connectionMap;	//Map of active connections
 		ConnectionUUID listenerUUID;	//Our UUID
-		char* address;
+		std::string address;
 		int port;
 		unsigned int AGKListener;
 
-		std::chrono::milliseconds HEARTBEAT_INTERVAL = std::chrono::milliseconds(16); //How often to send heartbeat messages
-		std::chrono::milliseconds OUTBOUND_TIMEOUT = std::chrono::milliseconds(100); //Timeout for outbound packets
+		std::chrono::milliseconds HEARTBEAT_INTERVAL = std::chrono::milliseconds(50); //How often to send heartbeat messages
+		std::chrono::milliseconds OUTBOUND_TIMEOUT = std::chrono::milliseconds(500); //Timeout for outbound packets
 		std::chrono::milliseconds CONNECTION_TIMEOUT = std::chrono::milliseconds(10000); //Timeout for connection
 		
 		//Updates

@@ -4,17 +4,15 @@
 #include "Util.h"		// For get_uuid function
 
 
-RUDPListener::RUDPListener(const char* address, int port)
+RUDPListener::RUDPListener(const std::string address, int port)
 {
 	// Initialize the listener with the given address and port
-	this->address = const_cast<char*>(address);
+	this->address = address;
 	this->port = port; 
 
-	std::string temp = get_uuid();
-	this->listenerUUID = new char[temp.size() + 1];
-	std::strcpy(this->listenerUUID, temp.c_str());
+	this->listenerUUID = get_uuid();
 
-	AGKListener = agk::CreateUDPListener(address, port);
+	AGKListener = agk::CreateUDPListener(address.c_str(), port);
 }
 
 RUDPListener::~RUDPListener()
@@ -55,7 +53,7 @@ void RUDPListener::Update()
 	SendHeartbeats();
 }
 
-const char* RUDPListener::GetListenerIP() const
+const std::string RUDPListener::GetListenerIP() const
 {
 	return address;
 }
@@ -102,20 +100,20 @@ RUDPListener::ConnectionUUID RUDPListener::GetConnectionUUID(int position) const
 		}
 		position--;
 	}
-	return nullptr; // Return nullptr if position is invalid
+	return ""; // Return empty string if position is invalid
 }
 
-RUDPListener::ConnectionUUID RUDPListener::GetConnectionByAddress(const char* ip, const int port) const
+RUDPListener::ConnectionUUID RUDPListener::GetConnectionByAddress(const std::string ip, const int port) const
 {
 	for (const auto& entry : connectionMap)
 	{
 		Connection* connection = entry.second;
-		if (std::strcmp(connection->ip, ip) == 0 && connection->port == port)
+		if (connection->ip == ip && connection->port == port)
 		{
 			return entry.first; // Return the UUID of the connection with the given IP and port
 		}
 	}
-	return nullptr; // Return nullptr if no matching connection is found
+	return ""; // Return empty string if no matching connection is found
 }
 
 unsigned int RUDPListener::GetAGKID() const
@@ -128,7 +126,7 @@ size_t RUDPListener::GetTotalConnections() const
 	return connectionMap.size();
 }
 
-const char* RUDPListener::GetConnectionIP(ConnectionUUID uuid) const
+const std::string RUDPListener::GetConnectionIP(ConnectionUUID uuid) const
 {
 	auto entry = connectionMap.find(uuid);
 
@@ -136,7 +134,7 @@ const char* RUDPListener::GetConnectionIP(ConnectionUUID uuid) const
 	{
 		return entry->second->ip;
 	}
-	return nullptr; // Return nullptr if the connection does not exist
+	return ""; // Return empty string if the connection does not exist
 }
 
 int RUDPListener::GetConnectionPort(ConnectionUUID uuid) const
@@ -154,12 +152,12 @@ int RUDPListener::GetConnectionPort(ConnectionUUID uuid) const
 	Public Methods
 */
 
-void RUDPListener::Connect(const char* ip, int port) const
+void RUDPListener::Connect(const std::string ip, int port) const
 {
 	unsigned int message = agk::CreateNetworkMessage();
 	agk::AddNetworkMessageByte(message, MessageType::MSG_CONNECT);
-	agk::AddNetworkMessageString(message, listenerUUID);
-	agk::SendUDPNetworkMessage(AGKListener, message, ip, port);
+	agk::AddNetworkMessageString(message, listenerUUID.c_str());
+	agk::SendUDPNetworkMessage(AGKListener, message, ip.c_str(), port);
 }
 
 void RUDPListener::Disconnect(ConnectionUUID uuid)
@@ -174,8 +172,8 @@ void RUDPListener::Disconnect(ConnectionUUID uuid)
 		// Send an acknowledgment back to the sender
 		unsigned int message = agk::CreateNetworkMessage();
 		agk::AddNetworkMessageByte(message, MessageType::MSG_DISCONNECT);
-		agk::AddNetworkMessageString(message, listenerUUID);
-		agk::SendUDPNetworkMessage(AGKListener, message, connection->ip, connection->port);
+		agk::AddNetworkMessageString(message, listenerUUID.c_str());
+		agk::SendUDPNetworkMessage(AGKListener, message, connection->ip.c_str(), connection->port);
 
 		RemoveConnection(uuid); // Remove the connection from the map	
 	}
@@ -368,6 +366,7 @@ void RUDPListener::SendHeartbeats()
 		if (std::chrono::duration_cast<std::chrono::milliseconds>(now - connection->lastUpdate) >= HEARTBEAT_INTERVAL)
 		{
 			SendHeartbeat(connection, connection->outboundSequence++); //Heartbeat is just a handshake
+			connection->lastUpdate = now; //Update lastUpdate after sending heartbeat
 		}
 	}
 }
@@ -417,7 +416,7 @@ void RUDPListener::ReadDataMessage(int message)
 
 void RUDPListener::ReadACKMessage(int message)
 {
-	char* uuid = agk::GetNetworkMessageString(message);
+	std::string uuid = agk::GetNetworkMessageString(message);
 	int sequence = agk::GetNetworkMessageInteger(message);
 
 	auto entry = connectionMap.find(uuid);
@@ -444,7 +443,7 @@ void RUDPListener::ReadACKMessage(int message)
 void RUDPListener::ReadConnectMessage(int message)
 {
 	// Extract connection details from the message
-	const char* ip = agk::GetNetworkMessageFromIP(message);
+	std::string ip = agk::GetNetworkMessageFromIP(message);
 	int port = agk::GetNetworkMessageFromPort(message);
 
 	ConnectionUUID uuid = agk::GetNetworkMessageString(message);
@@ -466,7 +465,7 @@ void RUDPListener::ReadConnectMessage(int message)
 void RUDPListener::ReadDisconnectMessage(int message)
 {
 	// Extract connection details from the message
-	const char* ip = agk::GetNetworkMessageFromIP(message);
+	std::string ip = agk::GetNetworkMessageFromIP(message);
 	int port = agk::GetNetworkMessageFromPort(message);
 
 	ConnectionUUID uuid = agk::GetNetworkMessageString(message);
@@ -486,7 +485,7 @@ void RUDPListener::ReadHandshakeMessage(int message)
 	auto entry = connectionMap.find(uuid);
 
 	// If the connection does not exist, create a new one
-	const char* ip = agk::GetNetworkMessageFromIP(message);
+	std::string ip = agk::GetNetworkMessageFromIP(message);
 	int port = agk::GetNetworkMessageFromPort(message);
 
 	Connection* connection = new Connection(ip, port);
@@ -519,9 +518,9 @@ void RUDPListener::SendAcknowledgment(Connection* connection, const int sequence
 	// Send an acknowledgment back to the sender
 	unsigned int message = agk::CreateNetworkMessage();
 	agk::AddNetworkMessageByte(message, MessageType::MSG_ACK);
-	agk::AddNetworkMessageString(message, listenerUUID);
+	agk::AddNetworkMessageString(message, listenerUUID.c_str());
 	agk::AddNetworkMessageInteger(message, sequence);
-	agk::SendUDPNetworkMessage(AGKListener, message, connection->ip, connection->port);
+	agk::SendUDPNetworkMessage(AGKListener, message, connection->ip.c_str(), connection->port);
 }
 
 void RUDPListener::SendDataMessage(Connection* connection, Packet* packet) const
@@ -529,8 +528,8 @@ void RUDPListener::SendDataMessage(Connection* connection, Packet* packet) const
 	//Resend the packet
 	unsigned int message = agk::CreateNetworkMessage();
 	agk::AddNetworkMessageByte(message, MessageType::MSG_DATA);
-	agk::AddNetworkMessageString(message, packet->uuid);
-	agk::AddNetworkMessageString(message, packet->hash);
+	agk::AddNetworkMessageString(message, packet->uuid.c_str());
+	agk::AddNetworkMessageString(message, packet->hash.c_str());
 	agk::AddNetworkMessageInteger(message, packet->sequence);
 	agk::AddNetworkMessageInteger(message, packet->size);
 
@@ -539,7 +538,7 @@ void RUDPListener::SendDataMessage(Connection* connection, Packet* packet) const
 		agk::AddNetworkMessageByte(message, agk::GetMemblockByte(packet->data, i));
 	}
 	//Send the message to the connection
-	agk::SendUDPNetworkMessage(AGKListener, message, connection->ip, connection->port);
+	agk::SendUDPNetworkMessage(AGKListener, message, connection->ip.c_str(), connection->port);
 	packet->timestamp = std::chrono::steady_clock::now(); //Update timestamp for the next check
 }
 
@@ -548,9 +547,9 @@ void RUDPListener::SendHandshake(Connection* connection, int sequence) const
 	// Send an acknowledgment back to the sender
 	unsigned int message = agk::CreateNetworkMessage();
 	agk::AddNetworkMessageByte(message, MessageType::MSG_HANDSHAKE);
-	agk::AddNetworkMessageString(message, listenerUUID);
+	agk::AddNetworkMessageString(message, listenerUUID.c_str());
 	agk::AddNetworkMessageInteger(message, sequence);
-	agk::SendUDPNetworkMessage(AGKListener, message, connection->ip, connection->port);
+	agk::SendUDPNetworkMessage(AGKListener, message, connection->ip.c_str(), connection->port);
 }
 
 void RUDPListener::SendHeartbeat(Connection* connection, int sequence) const
@@ -558,9 +557,9 @@ void RUDPListener::SendHeartbeat(Connection* connection, int sequence) const
 	// Send an acknowledgment back to the sender
 	unsigned int message = agk::CreateNetworkMessage();
 	agk::AddNetworkMessageByte(message, MessageType::MSG_HEARTBEAT);
-	agk::AddNetworkMessageString(message, listenerUUID);
+	agk::AddNetworkMessageString(message, listenerUUID.c_str());
 	agk::AddNetworkMessageInteger(message, sequence);
-	agk::SendUDPNetworkMessage(AGKListener, message, connection->ip, connection->port);
+	agk::SendUDPNetworkMessage(AGKListener, message, connection->ip.c_str(), connection->port);
 }
 
 /*
@@ -626,7 +625,8 @@ RUDPListener::Packet* RUDPListener::DecodeMessage(unsigned int message)
 	packet->data = memblock; //Store the memblock in the packet
 
 	//Return packet if hash is valid
-	if(std::strcmp(packet->hash, agk::GetMemblockSHA256(memblock)) == 0)
+	std::string calculatedHash = agk::GetMemblockSHA256(memblock);
+	if(packet->hash == calculatedHash)
 		return packet;
 
 	delete packet;
