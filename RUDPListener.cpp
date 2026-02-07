@@ -3,6 +3,13 @@
 #include "agk.h"		// For AGK functions
 #include "Util.h"		// For get_uuid function
 
+// Debug output macro - disable in release builds for performance
+#ifdef _DEBUG
+	#define RUDP_DEBUG(msg) OutputDebugStringA(msg)
+#else
+	#define RUDP_DEBUG(msg)
+#endif
+
 
 RUDPListener::RUDPListener(const std::string address, int port)
 {
@@ -24,16 +31,29 @@ RUDPListener::~RUDPListener()
 		for (Packet* packet : entry.second->readyPackets)
 		{
 			agk::DeleteMemblock(packet->data); // Delete the memblock associated with the packet
+			delete packet;
 		}
 
 		for (Packet* packet : entry.second->pendingPackets)
 		{
 			agk::DeleteMemblock(packet->data); // Delete the memblock associated with the packet
+			delete packet;
 		}
 
-		for (Packet* packet : entry.second->outboundPackets)
+		for (auto& pair : entry.second->outboundPackets)
 		{
-			agk::DeleteMemblock(packet->data); // Delete the memblock associated with the packet
+			agk::DeleteMemblock(pair.second->data); // Delete the memblock associated with the packet
+			delete pair.second;
+		}
+
+		// Clean up fragmentMap
+		for (auto& fragmentEntry : entry.second->fragmentMap)
+		{
+			for (Packet* packet : fragmentEntry.second)
+			{
+				agk::DeleteMemblock(packet->data); // Delete the memblock associated with the packet
+				delete packet;
+			}
 		}
 
 		//Connection struct destroy destroys remaining references
@@ -209,18 +229,62 @@ void RUDPListener::SendMessage(ConnectionUUID uuid, unsigned int memblock)
 	{
 		Connection* connection = entry->second;
 
-		//Parse packet
-		Packet* packet = EncodePacket(listenerUUID, memblock);
-		packet->sequence = connection->outboundSequence++;
+		int data_size = agk::GetMemblockSize(memblock);
+		const int FRAGMENT_SIZE = 1250;
 
-		//Send packet
-		SendDataMessage(connection, packet);
+		// Check if we need to fragment
+		if (data_size <= FRAGMENT_SIZE)
+		{
+			// Small message - send as normal packet
+			Packet* packet = EncodePacket(listenerUUID, memblock);
+			packet->sequence = connection->outboundSequence++;
+			SendDataMessage(connection, packet);
+			connection->outboundPackets[packet->sequence] = packet; // Insert into map with sequence as key
+		}
+		else
+		{
+			// Large message - fragment it
+			int total_fragments = static_cast<int>(std::ceil(static_cast<float>(data_size) / FRAGMENT_SIZE));
+			int base_sequence = connection->outboundSequence;
 
-		//Add to outbound
-		connection->outboundPackets.push_back(packet);
+			for (int i = 0; i < total_fragments; i++)
+			{
+				int offset = i * FRAGMENT_SIZE;
+				int chunk_size = std::min(FRAGMENT_SIZE, data_size - offset);
+
+				// Create fragment packet
+				Packet* fragment = EncodeFragmentPacket(
+					listenerUUID, 
+					memblock, 
+					offset, 
+					chunk_size, 
+					base_sequence, 
+					i, 
+					total_fragments, 
+					data_size
+				);
+
+				fragment->sequence = connection->outboundSequence++;
+				SendDataMessage(connection, fragment);
+				connection->outboundPackets[fragment->sequence] = fragment; // Insert into map with sequence as key
+			}
+		}
 	}
 }
 
+size_t RUDPListener::GetMessageCount(ConnectionUUID uuid)
+{
+	auto entry = connectionMap.find(uuid);
+
+	//If we find the uuid
+	if (entry != connectionMap.end())
+	{
+		Connection* connection = entry->second;
+
+		return connection->readyPackets.size();
+	}
+	return -1;	//Return -1 if no message is ready
+}
 /*
 *	Updates
 */
@@ -284,6 +348,10 @@ void RUDPListener::UpdatePendingMessages()
 	for (auto& entry : connectionMap)
 	{
 		Connection* connection = entry.second;
+
+		// First, try to reassemble any complete fragment groups
+		ReassembleFragments(connection);
+
 		// Check if there are any pending packets
 		if (!connection->pendingPackets.empty())
 		{
@@ -299,12 +367,27 @@ void RUDPListener::UpdatePendingMessages()
 				// If the sequence is the next expected one, move it to ready packets
 				if (packet->sequence == connection->inboundSequence)
 				{
-					connection->inboundSequence++;
+					// Check if this is a reassembled fragment packet
+					if (packet->total_fragments > 0)
+					{
+						RUDP_DEBUG(("Moving reassembled packet to ready: sequence=" + std::to_string(packet->sequence) + 
+						", incrementing inboundSequence by " + std::to_string(packet->total_fragments) + "\n").c_str());
+						// Reassembled packet - increment by number of fragments consumed
+						connection->inboundSequence += packet->total_fragments;
+					}
+					else
+					{
+						// Normal packet - increment by 1
+						connection->inboundSequence++;
+					}
+
 					connection->readyPackets.push_back(packet);
 					it = connection->pendingPackets.erase(it); // Remove from pending
 				}
 				else
 				{
+					RUDP_DEBUG(("Packet stuck in pending: packet->sequence=" + std::to_string(packet->sequence) + 
+					", expected inboundSequence=" + std::to_string(connection->inboundSequence) + "\n").c_str());
 					it++; // Move to the next packet
 				}
 			}
@@ -319,9 +402,10 @@ void RUDPListener::CheckOutgoingMessages()
 	{
 		Connection* connection = entry.second;
 
-		// If there are packets we have not acknowledged yet
-		for (Packet* packet : connection->outboundPackets)
+		// Iterate through outbound packet map
+		for (auto& packetPair : connection->outboundPackets)
 		{
+			Packet* packet = packetPair.second;
 			std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
 
 			//Trigger resend
@@ -365,7 +449,7 @@ void RUDPListener::SendHeartbeats()
 
 		if (std::chrono::duration_cast<std::chrono::milliseconds>(now - connection->lastHeartbeatSent) >= HEARTBEAT_INTERVAL)
 		{
-			SendHeartbeat(connection, connection->outboundSequence++);
+			SendHeartbeat(connection, 0); // Sequence not used for heartbeats
 			connection->lastHeartbeatSent = now; //Update lastHeartbeatSent after sending
 		}
 	}
@@ -392,23 +476,37 @@ void RUDPListener::ReadDataMessage(int message)
 
 			connection->lastUpdate = std::chrono::steady_clock::now(); //Update last update time
 
-			//Check if the sequence is valid
-			if (packet->sequence == connection->inboundSequence)
+			// Handle fragments separately
+			if (packet->is_fragment)
 			{
-				connection->inboundSequence++; //Increment sequence for next message
-				connection->readyPackets.push_back(packet); //Add packet to ready packets
+				// Add fragment to the fragment map
+				connection->fragmentMap[packet->base_sequence].push_back(packet);
 				SendAcknowledgment(connection, packet->sequence);
-			}
-			else if (packet->sequence > connection->inboundSequence)
-			{
-				connection->pendingPackets.push_back(packet); //Add packet to ready packets
-				SendAcknowledgment(connection, packet->sequence);
+				// Don't increment inboundSequence here - fragments are out of normal flow
+
+				RUDP_DEBUG(("Received packet fragment " + std::to_string(packet->fragment_index) + "/" + std::to_string(packet->total_fragments)+"\n").c_str());
 			}
 			else
 			{
-				SendAcknowledgment(connection, packet->sequence);
-				agk::DeleteMemblock(packet->data); //Delete the memblock associated with the packet
-				delete packet; //Discard packet if sequence is lower than expected
+				// Normal packet handling
+				//Check if the sequence is valid
+				if (packet->sequence == connection->inboundSequence)
+				{
+					connection->inboundSequence++; //Increment sequence for next message
+					connection->readyPackets.push_back(packet); //Add packet to ready packets
+					SendAcknowledgment(connection, packet->sequence);
+				}
+				else if (packet->sequence > connection->inboundSequence)
+				{
+					connection->pendingPackets.push_back(packet); //Add packet to pending packets
+					SendAcknowledgment(connection, packet->sequence);
+				}
+				else
+				{
+					SendAcknowledgment(connection, packet->sequence);
+					agk::DeleteMemblock(packet->data); //Delete the memblock associated with the packet
+					delete packet; //Discard packet if sequence is lower than expected
+				}
 			}
 		}
 	}
@@ -428,14 +526,13 @@ void RUDPListener::ReadACKMessage(int message)
 
 		connection->lastUpdate = std::chrono::steady_clock::now(); //Update last update time
 
-		//Search for a packet matching the sequence number
-		for (int i = 0;i < connection->outboundPackets.size();i++)
+		// O(1) lookup in unordered_map by sequence number
+		auto packetIt = connection->outboundPackets.find(sequence);
+		if (packetIt != connection->outboundPackets.end())
 		{
-			if (connection->outboundPackets[i]->sequence == sequence)
-			{
-				connection->outboundPackets.erase(connection->outboundPackets.begin() + i); //Remove the packet from outbound packets
-				return;
-			}
+			agk::DeleteMemblock(packetIt->second->data); // Clean up the memblock
+			delete packetIt->second; // Clean up the packet
+			connection->outboundPackets.erase(packetIt); // Remove from map
 		}
 	}
 }
@@ -454,7 +551,7 @@ void RUDPListener::ReadConnectMessage(int message)
 	
 	if (AddConnection(uuid, connection))
 	{
-		SendHandshake(connection, connection->outboundSequence++); // Acknowledge the connection
+		SendHandshake(connection, 0); // Acknowledge the connection (sequence not used for handshakes)
 	}
 	else
 	{
@@ -471,24 +568,26 @@ void RUDPListener::ReadDisconnectMessage(int message)
 	ConnectionUUID uuid = agk::GetNetworkMessageString(message);
 	int sequence = agk::GetNetworkMessageInteger(message);
 
-	// Send acknowledgment and remove the connection
-	Connection* connection = new Connection(ip, port);
-	connection->lastUpdate = std::chrono::steady_clock::now(); //Update last update time
-	SendAcknowledgment(connection, sequence); 
+	// Send acknowledgment if connection exists
+	auto entry = connectionMap.find(uuid);
+	if (entry != connectionMap.end())
+	{
+		SendAcknowledgment(entry->second, sequence);
+	}
+
 	RemoveConnection(uuid);
 }
 
 void RUDPListener::ReadHandshakeMessage(int message)
 {
 	ConnectionUUID uuid = agk::GetNetworkMessageString(message);
-	int sequence = agk::GetNetworkMessageInteger(message);
 	auto entry = connectionMap.find(uuid);
 
 	// If the connection already exists, just update it
 	if (entry != connectionMap.end())	
 	{
 		Connection* connection = entry->second;
-		connection->inboundSequence++; //Increment sequence for next message
+		// Don't increment inboundSequence - handshakes are control messages, not data
 		connection->lastUpdate = std::chrono::steady_clock::now(); //Update last update time
 	}
 	else
@@ -498,7 +597,7 @@ void RUDPListener::ReadHandshakeMessage(int message)
 		int port = agk::GetNetworkMessageFromPort(message);
 
 		Connection* connection = new Connection(ip, port);
-		connection->inboundSequence++; //Increment sequence for next message
+		// Don't increment inboundSequence - handshakes are control messages, not data
 		connection->lastUpdate = std::chrono::steady_clock::now(); //Update last update time
 		AddConnection(uuid, connection);
 	}
@@ -507,14 +606,13 @@ void RUDPListener::ReadHandshakeMessage(int message)
 void RUDPListener::ReadHeartbeatMessage(int message)
 {
 	ConnectionUUID uuid = agk::GetNetworkMessageString(message);
-	int sequence = agk::GetNetworkMessageInteger(message);
 	auto entry = connectionMap.find(uuid);
 
 	// If the connection exists, update its last update time
 	if (entry != connectionMap.end())
 	{
 		Connection* connection = entry->second;
-		connection->inboundSequence++; //Increment sequence for next message
+		// Don't increment inboundSequence - heartbeats are control messages, not data
 		connection->lastUpdate = std::chrono::steady_clock::now(); //Update last update time
 	}
 }
@@ -535,7 +633,7 @@ void RUDPListener::SendAcknowledgment(Connection* connection, const int sequence
 
 void RUDPListener::SendDataMessage(Connection* connection, Packet* packet) const
 {
-	//Resend the packet
+	//Send the packet
 	unsigned int message = agk::CreateNetworkMessage();
 	agk::AddNetworkMessageByte(message, MessageType::MSG_DATA);
 	agk::AddNetworkMessageString(message, packet->uuid.c_str());
@@ -543,10 +641,36 @@ void RUDPListener::SendDataMessage(Connection* connection, Packet* packet) const
 	agk::AddNetworkMessageInteger(message, packet->sequence);
 	agk::AddNetworkMessageInteger(message, packet->size);
 
-	for (int i = 0; i < packet->size; i++)
+	// Add fragment metadata if this is a fragment
+	agk::AddNetworkMessageByte(message, packet->is_fragment ? 1 : 0);
+	if (packet->is_fragment)
+	{
+		agk::AddNetworkMessageInteger(message, packet->base_sequence);
+		agk::AddNetworkMessageInteger(message, packet->fragment_index);
+		agk::AddNetworkMessageInteger(message, packet->total_fragments);
+		agk::AddNetworkMessageInteger(message, packet->total_size);
+		RUDP_DEBUG(("Sending packet fragment "+std::to_string(packet->fragment_index)+"/"+std::to_string(packet->total_fragments) + "\n").c_str());
+	}
+
+	// Optimize: Read 4 bytes at a time from memblock to reduce read operations
+	int numInts = packet->size / 4;
+
+	for (int i = 0; i < numInts; i++)
+	{
+		int value = agk::GetMemblockInt(packet->data, i * 4);
+		// Add as individual bytes (little-endian)
+		agk::AddNetworkMessageByte(message, (value) & 0xFF);
+		agk::AddNetworkMessageByte(message, (value >> 8) & 0xFF);
+		agk::AddNetworkMessageByte(message, (value >> 16) & 0xFF);
+		agk::AddNetworkMessageByte(message, (value >> 24) & 0xFF);
+	}
+
+	// Add remaining bytes
+	for (int i = numInts * 4; i < packet->size; i++)
 	{
 		agk::AddNetworkMessageByte(message, agk::GetMemblockByte(packet->data, i));
 	}
+
 	//Send the message to the connection
 	agk::SendUDPNetworkMessage(AGKListener, message, connection->ip.c_str(), connection->port);
 	packet->timestamp = std::chrono::steady_clock::now(); //Update timestamp for the next check
@@ -554,21 +678,19 @@ void RUDPListener::SendDataMessage(Connection* connection, Packet* packet) const
 
 void RUDPListener::SendHandshake(Connection* connection, int sequence) const
 {
-	// Send an acknowledgment back to the sender
+	// Send a handshake back to the sender (no sequence needed for control messages)
 	unsigned int message = agk::CreateNetworkMessage();
 	agk::AddNetworkMessageByte(message, MessageType::MSG_HANDSHAKE);
 	agk::AddNetworkMessageString(message, listenerUUID.c_str());
-	agk::AddNetworkMessageInteger(message, sequence);
 	agk::SendUDPNetworkMessage(AGKListener, message, connection->ip.c_str(), connection->port);
 }
 
 void RUDPListener::SendHeartbeat(Connection* connection, int sequence) const
 {
-	// Send an acknowledgment back to the sender
+	// Send a heartbeat to keep connection alive (no sequence needed for control messages)
 	unsigned int message = agk::CreateNetworkMessage();
 	agk::AddNetworkMessageByte(message, MessageType::MSG_HEARTBEAT);
 	agk::AddNetworkMessageString(message, listenerUUID.c_str());
-	agk::AddNetworkMessageInteger(message, sequence);
 	agk::SendUDPNetworkMessage(AGKListener, message, connection->ip.c_str(), connection->port);
 }
 
@@ -612,7 +734,146 @@ RUDPListener::Packet* RUDPListener::EncodePacket(ConnectionUUID uuid, unsigned i
 	packet->hash = agk::GetMemblockSHA256(memblock); //Calculate the hash of the memblock
 	packet->size = agk::GetMemblockSize(memblock);
 	packet->data = memblock; //Store the memblock in the packet
+	packet->is_fragment = false; // Normal packet, not a fragment
 	return packet;
+}
+
+RUDPListener::Packet* RUDPListener::EncodeFragmentPacket(ConnectionUUID uuid, unsigned int memblock, int offset, int size, int base_seq, int frag_idx, int total_frags, int total_size) const
+{
+	Packet* packet = new Packet();
+	packet->uuid = uuid;
+	packet->size = size;
+
+	// Create a memblock for this fragment only
+	unsigned int fragmentMemblock = agk::CreateMemblock(size);
+
+	// Optimize: Copy 4 bytes at a time when aligned
+	int numInts = size / 4;
+
+	for (int i = 0; i < numInts; i++)
+	{
+		int byteOffset = i * 4;
+		agk::SetMemblockInt(fragmentMemblock, byteOffset, agk::GetMemblockInt(memblock, offset + byteOffset));
+	}
+
+	// Copy remaining bytes
+	for (int i = numInts * 4; i < size; i++)
+	{
+		agk::SetMemblockByte(fragmentMemblock, i, agk::GetMemblockByte(memblock, offset + i));
+	}
+
+	packet->hash = agk::GetMemblockSHA256(fragmentMemblock); // Hash of this fragment only
+	packet->data = fragmentMemblock;
+
+	// Set fragment metadata
+	packet->is_fragment = true;
+	packet->base_sequence = base_seq;
+	packet->fragment_index = frag_idx;
+	packet->total_fragments = total_frags;
+	packet->total_size = total_size;
+
+	return packet;
+}
+
+void RUDPListener::ReassembleFragments(Connection* connection)
+{
+	// Check each fragment group for completion
+	for (auto it = connection->fragmentMap.begin(); it != connection->fragmentMap.end();)
+	{
+		int base_seq = it->first;
+		PacketList& fragments = it->second;
+
+		// Check if we have all fragments
+		if (fragments.empty())
+		{
+			++it;
+			continue;
+		}
+
+		int total_fragments = fragments[0]->total_fragments;
+		int total_size = fragments[0]->total_size;
+
+		if (static_cast<int>(fragments.size()) == total_fragments)
+		{
+			// Sort fragments by index
+			std::sort(fragments.begin(), fragments.end(),
+				[](const Packet* a, const Packet* b) {
+					return a->fragment_index < b->fragment_index;
+				});
+
+			// Verify all indices are present (0 to total_fragments-1)
+			bool all_present = true;
+			for (int i = 0; i < total_fragments; i++)
+			{
+				if (fragments[i]->fragment_index != i)
+				{
+					all_present = false;
+					break;
+				}
+			}
+
+			if (all_present)
+			{
+				// Create combined memblock
+				unsigned int combinedMemblock = agk::CreateMemblock(total_size);
+
+				int offset = 0;
+				for (Packet* fragment : fragments)
+				{
+					// Copy fragment data into combined memblock
+					// Optimize: Copy 4 bytes at a time when aligned
+					int numInts = fragment->size / 4;
+					int remainingBytes = fragment->size % 4;
+
+					for (int i = 0; i < numInts; i++)
+					{
+						int byteOffset = i * 4;
+						agk::SetMemblockInt(combinedMemblock, offset + byteOffset, agk::GetMemblockInt(fragment->data, byteOffset));
+					}
+
+					// Copy remaining bytes
+					for (int i = numInts * 4; i < fragment->size; i++)
+					{
+						agk::SetMemblockByte(combinedMemblock, offset + i, agk::GetMemblockByte(fragment->data, i));
+					}
+
+					offset += fragment->size;
+				}
+
+				// Create final reassembled packet
+				Packet* reassembled = new Packet();
+				reassembled->uuid = fragments[0]->uuid;
+				reassembled->sequence = base_seq; // Use base_sequence as the packet sequence
+				reassembled->size = total_size;
+				reassembled->hash = agk::GetMemblockSHA256(combinedMemblock);
+				reassembled->data = combinedMemblock;
+				reassembled->is_fragment = false;
+
+				// Preserve fragment count so UpdatePendingMessages can increment sequence correctly
+				reassembled->total_fragments = total_fragments;
+
+				RUDP_DEBUG(("Reassembled packet created: sequence=" + std::to_string(base_seq) + 
+				", total_fragments=" + std::to_string(total_fragments) + 
+				", size=" + std::to_string(total_size) + "bytes\n").c_str());
+
+				// Add to pending packets (it will be moved to ready when sequence matches)
+				connection->pendingPackets.push_back(reassembled);
+
+				// Clean up fragments
+				for (Packet* fragment : fragments)
+				{
+					agk::DeleteMemblock(fragment->data);
+					delete fragment;
+				}
+
+				// Remove from fragment map
+				it = connection->fragmentMap.erase(it);
+				continue;
+			}
+		}
+
+		++it;
+	}
 }
 
 RUDPListener::Packet* RUDPListener::DecodeMessage(unsigned int message)
@@ -625,9 +886,34 @@ RUDPListener::Packet* RUDPListener::DecodeMessage(unsigned int message)
 	packet->sequence = agk::GetNetworkMessageInteger(message);
 	packet->size = agk::GetNetworkMessageInteger(message); //In bytes
 
+	// Extract fragment metadata
+	packet->is_fragment = (agk::GetNetworkMessageByte(message) == 1);
+	if (packet->is_fragment)
+	{
+		packet->base_sequence = agk::GetNetworkMessageInteger(message);
+		packet->fragment_index = agk::GetNetworkMessageInteger(message);
+		packet->total_fragments = agk::GetNetworkMessageInteger(message);
+		packet->total_size = agk::GetNetworkMessageInteger(message);
+	}
+
 	unsigned int memblock = agk::CreateMemblock(packet->size);
 
-	for (int i = 0;i < packet->size ;i++)
+	// Optimize: Write 4 bytes at a time from network message
+	int numInts = packet->size / 4;
+	int remainingBytes = packet->size % 4;
+
+	for (int i = 0; i < numInts; i++)
+	{
+		// Read 4 bytes and combine into integer (little-endian)
+		int value = agk::GetNetworkMessageByte(message);
+		value |= agk::GetNetworkMessageByte(message) << 8;
+		value |= agk::GetNetworkMessageByte(message) << 16;
+		value |= agk::GetNetworkMessageByte(message) << 24;
+		agk::SetMemblockInt(memblock, i * 4, value);
+	}
+
+	// Write remaining bytes
+	for (int i = numInts * 4; i < packet->size; i++)
 	{
 		agk::SetMemblockByte(memblock, i, agk::GetNetworkMessageByte(message));
 	}

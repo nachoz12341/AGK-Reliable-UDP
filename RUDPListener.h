@@ -4,6 +4,7 @@
 #include <chrono>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class RUDPListener {
@@ -35,6 +36,7 @@ class RUDPListener {
 		void Disconnect(ConnectionUUID uuid);
 		void SendMessage(ConnectionUUID uuid, unsigned int memblock);
 		int GetMessage(ConnectionUUID uuid);
+		size_t GetMessageCount(ConnectionUUID uuid);
 
 		
 
@@ -56,9 +58,17 @@ class RUDPListener {
 			std::string hash;
 			unsigned int data;
 			std::chrono::steady_clock::time_point timestamp;
+
+			// Fragment fields
+			bool is_fragment = false;
+			int base_sequence = -1;      // Base sequence ID for the fragmented message group
+			int fragment_index = -1;     // Which fragment (0, 1, 2...)
+			int total_fragments = -1;    // Total number of fragments in the group
+			int total_size = -1;         // Original message size before fragmentation
 		} Packet;
 
 		typedef std::vector<Packet*> PacketList;
+		typedef std::unordered_map<int, Packet*> PacketMap; // Map of sequence -> packet for fast ACK lookup
 
 		typedef struct Connection {
 			const std::string ip;
@@ -71,7 +81,8 @@ class RUDPListener {
 
 			PacketList readyPackets;	//Packets ready to be read
 			PacketList pendingPackets;	//Packets waiting for earlier messages
-			PacketList outboundPackets;	//Packets we've sent to this client
+			PacketMap outboundPackets;	//Map of sequence -> packet for fast ACK lookup
+			std::map<int, PacketList> fragmentMap;	//Map of base_sequence -> list of fragments
 
 			Connection(const std::string ip, int port)
 				: ip(ip), port(port), inboundSequence(0), outboundSequence(0) 
@@ -91,9 +102,18 @@ class RUDPListener {
 					delete packet;
 				}
 
-				for (Packet* packet : outboundPackets)
+				for (auto& pair : outboundPackets)
 				{
-					delete packet;
+					delete pair.second;
+				}
+
+				// Clean up fragmentMap
+				for (auto& fragmentEntry : fragmentMap)
+				{
+					for (Packet* packet : fragmentEntry.second)
+					{
+						delete packet;
+					}
 				}
 			}
 		}Connection;
@@ -134,15 +154,19 @@ class RUDPListener {
 		void SendHandshake(Connection* connection, int sequence) const;
 		void SendHeartbeat(Connection* connection, int sequence) const;
 
-		//Connection management
-		bool AddConnection(ConnectionUUID uuid, Connection* connection);
-		ConnectionMap::iterator RemoveConnection(ConnectionUUID uuid);
+			//Connection management
+			bool AddConnection(ConnectionUUID uuid, Connection* connection);
+			ConnectionMap::iterator RemoveConnection(ConnectionUUID uuid);
 
-		//Data Parsing
-		Packet* DecodeMessage(unsigned int message);
-		Packet* EncodePacket(ConnectionUUID uuid, unsigned int memblock) const;
-		
-		
-};
+			//Data Parsing
+			Packet* DecodeMessage(unsigned int message);
+			Packet* EncodePacket(ConnectionUUID uuid, unsigned int memblock) const;
+			Packet* EncodeFragmentPacket(ConnectionUUID uuid, unsigned int memblock, int offset, int size, int base_seq, int frag_idx, int total_frags, int total_size) const;
+
+			//Fragment handling
+			void ReassembleFragments(Connection* connection);
+
+
+		};
 
 #endif 
