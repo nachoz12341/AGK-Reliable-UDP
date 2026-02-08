@@ -21,6 +21,7 @@ class RUDPListener {
 		void SetMessageTimeout(std::chrono::milliseconds timeout);
 		void SetConnectionTimeout(std::chrono::milliseconds timeout);
 		void SetHeartbeatInterval(std::chrono::milliseconds interval);
+		void SetMaxThroughputPerFrame(int bytes);
 
 		//Active Connections
 		ConnectionUUID GetConnectionUUID(int position) const;
@@ -29,7 +30,7 @@ class RUDPListener {
 		size_t GetTotalConnections() const;
 		const std::string GetConnectionIP(ConnectionUUID uuid) const;
 		int GetConnectionPort(ConnectionUUID uuid) const;
-
+		int GetMaxThroughputPerFrame() const;
 
 		//Public Methods
 		void Connect(const std::string ip, int port) const;	//Sends connect request won't actually connect until we receive handshake
@@ -82,10 +83,13 @@ class RUDPListener {
 			PacketList readyPackets;	//Packets ready to be read
 			PacketList pendingPackets;	//Packets waiting for earlier messages
 			PacketMap outboundPackets;	//Map of sequence -> packet for fast ACK lookup
+			PacketList queuedOutbound;	//Packets queued to send (bandwidth limited)
 			std::map<int, PacketList> fragmentMap;	//Map of base_sequence -> list of fragments
 
+			int sendBudgetThisFrame; // Bytes remaining to send this frame (64KB limit)
+
 			Connection(const std::string ip, int port)
-				: ip(ip), port(port), inboundSequence(0), outboundSequence(0) 
+				: ip(ip), port(port), inboundSequence(0), outboundSequence(0), sendBudgetThisFrame(65536) 
 			{
 				lastUpdate = std::chrono::steady_clock::now();
 				lastHeartbeatSent = std::chrono::steady_clock::now();
@@ -105,6 +109,11 @@ class RUDPListener {
 				for (auto& pair : outboundPackets)
 				{
 					delete pair.second;
+				}
+
+				for (Packet* packet : queuedOutbound)
+				{
+					delete packet;
 				}
 
 				// Clean up fragmentMap
@@ -132,10 +141,12 @@ class RUDPListener {
 		std::chrono::milliseconds HEARTBEAT_INTERVAL = std::chrono::milliseconds(50); //How often to send heartbeat messages
 		std::chrono::milliseconds OUTBOUND_TIMEOUT = std::chrono::milliseconds(500); //Timeout for outbound packets
 		std::chrono::milliseconds CONNECTION_TIMEOUT = std::chrono::milliseconds(10000); //Timeout for connection
+		int MAX_SEND_PER_FRAME = 65536; // 64KB bandwidth limit per frame
 		
 		//Updates
 		void ReadIncomingMessages();
 		void UpdatePendingMessages();
+		void ProcessOutboundQueue(); // Process queued packets with bandwidth limiting
 		void CheckOutgoingMessages();
 		void CheckTimeout();
 		void SendHeartbeats();

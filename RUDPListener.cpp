@@ -48,6 +48,12 @@ RUDPListener::~RUDPListener()
 			delete pair.second;
 		}
 
+		for (Packet* packet : entry.second->queuedOutbound)
+		{
+			agk::DeleteMemblock(packet->data); // Delete the memblock associated with the packet
+			delete packet;
+		}
+
 		// Clean up fragmentMap
 		for (auto& fragmentEntry : entry.second->fragmentMap)
 		{
@@ -68,6 +74,7 @@ RUDPListener::~RUDPListener()
 //Needs to be called every frame
 void RUDPListener::Update()
 {
+	ProcessOutboundQueue(); // Process queued packets with bandwidth limiting (must be first)
 	ReadIncomingMessages();
 	UpdatePendingMessages();
 	CheckOutgoingMessages();
@@ -107,6 +114,11 @@ void RUDPListener::SetConnectionTimeout(std::chrono::milliseconds timeout)
 void RUDPListener::SetHeartbeatInterval(std::chrono::milliseconds interval)
 {
 	HEARTBEAT_INTERVAL = interval;
+}
+
+void RUDPListener::SetMaxThroughputPerFrame(int bytes)
+{
+	MAX_SEND_PER_FRAME = bytes;
 }
 
 /*
@@ -168,6 +180,11 @@ int RUDPListener::GetConnectionPort(ConnectionUUID uuid) const
 		return entry->second->port;
 	}
 	return -1; // Return -1 if the connection does not exist
+}
+
+int RUDPListener::GetMaxThroughputPerFrame() const
+{
+	return MAX_SEND_PER_FRAME;
 }
 
 /*
@@ -237,15 +254,14 @@ void RUDPListener::SendMessage(ConnectionUUID uuid, unsigned int memblock)
 		// Check if we need to fragment
 		if (data_size <= FRAGMENT_SIZE)
 		{
-			// Small message - send as normal packet
+			// Small message - queue for sending
 			Packet* packet = EncodePacket(listenerUUID, memblock);
 			packet->sequence = connection->outboundSequence++;
-			SendDataMessage(connection, packet);
-			connection->outboundPackets[packet->sequence] = packet; // Insert into map with sequence as key
+			connection->queuedOutbound.push_back(packet); // Queue instead of immediate send
 		}
 		else
 		{
-			// Large message - fragment it
+			// Large message - fragment and queue all fragments
 			int total_fragments = static_cast<int>(std::ceil(static_cast<float>(data_size) / FRAGMENT_SIZE));
 			int base_sequence = connection->outboundSequence;
 
@@ -267,8 +283,7 @@ void RUDPListener::SendMessage(ConnectionUUID uuid, unsigned int memblock)
 				);
 
 				fragment->sequence = connection->outboundSequence++;
-				SendDataMessage(connection, fragment);
-				connection->outboundPackets[fragment->sequence] = fragment; // Insert into map with sequence as key
+				connection->queuedOutbound.push_back(fragment); // Queue for bandwidth-limited sending
 			}
 		}
 	}
@@ -392,6 +407,45 @@ void RUDPListener::UpdatePendingMessages()
 					", expected inboundSequence=" + std::to_string(connection->inboundSequence) + "\n").c_str());
 					it++; // Move to the next packet
 				}
+			}
+		}
+	}
+}
+
+void RUDPListener::ProcessOutboundQueue()
+{
+	// Process each connection's outbound queue
+	for (auto& entry : connectionMap)
+	{
+		Connection* connection = entry.second;
+
+		// Reset send budget at start of frame
+		connection->sendBudgetThisFrame = MAX_SEND_PER_FRAME;
+
+		// Process queued packets up to bandwidth limit
+		while (!connection->queuedOutbound.empty() && connection->sendBudgetThisFrame > 0)
+		{
+			Packet* packet = connection->queuedOutbound.front();
+
+			// Calculate packet overhead (headers + payload)
+			// UDP header ~8 bytes, IP header ~20 bytes, MSG_DATA metadata ~100 bytes
+			int packetSize = packet->size + 128; 
+
+			// Check if we have budget for this packet
+			if (packetSize <= connection->sendBudgetThisFrame || connection->queuedOutbound.size() == 1)
+			{
+				// Send the packet
+				SendDataMessage(connection, packet);
+				connection->outboundPackets[packet->sequence] = packet; // Track for ACK
+				connection->sendBudgetThisFrame -= packetSize;
+
+				// Remove from queue
+				connection->queuedOutbound.erase(connection->queuedOutbound.begin());
+			}
+			else
+			{
+				// Budget exhausted, stop processing this connection
+				break;
 			}
 		}
 	}
