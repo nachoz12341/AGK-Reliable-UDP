@@ -154,17 +154,20 @@ class RUDPListener {
 		void SendHandshake(Connection* connection, int sequence) const;
 		void SendHeartbeat(Connection* connection, int sequence) const;
 
-			//Connection management
-			bool AddConnection(ConnectionUUID uuid, Connection* connection);
-			ConnectionMap::iterator RemoveConnection(ConnectionUUID uuid);
+		//Connection management
+		bool AddConnection(ConnectionUUID uuid, Connection* connection);
+		ConnectionMap::iterator RemoveConnection(ConnectionUUID uuid);
 
-			//Data Parsing
-			Packet* DecodeMessage(unsigned int message);
-			Packet* EncodePacket(ConnectionUUID uuid, unsigned int memblock) const;
-			Packet* EncodeFragmentPacket(ConnectionUUID uuid, unsigned int memblock, int offset, int size, int base_seq, int frag_idx, int total_frags, int total_size) const;
+		//Data Parsing
+		Packet* DecodeMessage(unsigned int message);
+		Packet* EncodePacket(ConnectionUUID uuid, unsigned int memblock) const;
+		Packet* EncodeFragmentPacket(ConnectionUUID uuid, unsigned int memblock, int offset, int size, int base_seq, int frag_idx, int total_frags, int total_size) const;
 
-			//Fragment handling
-			void ReassembleFragments(Connection* connection);
+		//Fragment handling
+		void ReassembleFragments(Connection* connection);
+
+		//UUID Helper
+		std::string RUDPListener::GetUUID();
 
 
 		};

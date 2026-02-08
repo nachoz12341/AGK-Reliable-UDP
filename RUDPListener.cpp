@@ -1,7 +1,9 @@
 #include "RUDPListener.h"
 #include <algorithm>	// For sort
+#include <random>
+#include <string>
+
 #include "agk.h"		// For AGK functions
-#include "Util.h"		// For get_uuid function
 
 // Debug output macro - disable in release builds for performance
 #ifdef _DEBUG
@@ -17,7 +19,7 @@ RUDPListener::RUDPListener(const std::string address, int port)
 	this->address = address;
 	this->port = port; 
 
-	this->listenerUUID = get_uuid();
+	this->listenerUUID = GetUUID();
 
 	AGKListener = agk::CreateUDPListener(address.c_str(), port);
 }
@@ -929,4 +931,25 @@ RUDPListener::Packet* RUDPListener::DecodeMessage(unsigned int message)
 	agk::DeleteMemblock(memblock);	
 
 	return nullptr; //Throw away message if hash doesn't match
+}
+
+
+//Helper function to generate a random UUID string
+std::string RUDPListener::GetUUID()
+{
+	static std::random_device dev;
+	static std::mt19937 rng(dev());
+
+	std::uniform_int_distribution<int> dist(0, 15);
+
+	const char* v = "0123456789abcdef";
+	const bool dash[] = { 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0 };
+
+	std::string res;
+	for (int i = 0; i < 16; i++) {
+		if (dash[i]) res += "-";
+		res += v[dist(rng)];
+		res += v[dist(rng)];
+	}
+	return res;
 }

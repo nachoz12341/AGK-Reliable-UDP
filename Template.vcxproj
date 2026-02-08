@@ -127,7 +127,6 @@
   <ItemGroup>
     <ClInclude Include="RUDPListener.h" />
     <ClInclude Include="template.h" />
-    <ClInclude Include="Util.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
