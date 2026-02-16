@@ -5,6 +5,8 @@
 
 #include "agk.h"		// For AGK functions
 
+#include "../util.h"
+
 // Debug output macro - disable in release builds for performance
 #ifdef _DEBUG
 	#define RUDP_DEBUG(msg) OutputDebugStringA(msg)
@@ -80,6 +82,12 @@ void RUDPListener::Update()
 	CheckOutgoingMessages();
 	CheckTimeout();
 	SendHeartbeats();
+
+	///REMOVE
+	for (const auto& entry : connectionMap)
+	{
+		agk::Print(("Listener pending: " + std::to_string(entry.second->pendingPackets.size())).c_str());
+	}
 }
 
 const std::string RUDPListener::GetListenerIP() const
@@ -381,22 +389,15 @@ void RUDPListener::UpdatePendingMessages()
 			for (auto it = connection->pendingPackets.begin(); it != connection->pendingPackets.end();)
 			{
 				Packet* packet = *it;
-				// If the sequence is the next expected one, move it to ready packets
+               // If the sequence is the next expected one, move it to ready packets
 				if (packet->sequence == connection->inboundSequence)
 				{
-					// Check if this is a reassembled fragment packet
-					if (packet->total_fragments > 0)
-					{
-						RUDP_DEBUG(("Moving reassembled packet to ready: sequence=" + std::to_string(packet->sequence) + 
-						", incrementing inboundSequence by " + std::to_string(packet->total_fragments) + "\n").c_str());
-						// Reassembled packet - increment by number of fragments consumed
-						connection->inboundSequence += packet->total_fragments;
-					}
-					else
-					{
-						// Normal packet - increment by 1
-						connection->inboundSequence++;
-					}
+                   // Reassembled (or otherwise multi-sequence) packet: advance by the number
+					// of sequence numbers this logical message consumed.
+					const int advanceBy = (packet->total_fragments > 0) ? packet->total_fragments : 1;
+					RUDP_DEBUG(("Moving packet to ready: sequence=" + std::to_string(packet->sequence) +
+						", incrementing inboundSequence by " + std::to_string(advanceBy) + "\n").c_str());
+					connection->inboundSequence += advanceBy;
 
 					connection->readyPackets.push_back(packet);
 					it = connection->pendingPackets.erase(it); // Remove from pending
@@ -532,11 +533,25 @@ void RUDPListener::ReadDataMessage(int message)
 
 			connection->lastUpdate = std::chrono::steady_clock::now(); //Update last update time
 
-			// Handle fragments separately
+          // Handle fragments separately
 			if (packet->is_fragment)
 			{
+             // De-duplicate fragments (same base_sequence + fragment_index) to avoid
+				// stalling reassembly when retransmits arrive.
+				PacketList& list = connection->fragmentMap[packet->base_sequence];
+				const bool isDup = std::any_of(list.begin(), list.end(), [&](const Packet* p) {
+					return p->fragment_index == packet->fragment_index;
+				});
+				if (isDup)
+				{
+					SendAcknowledgment(connection, packet->sequence);
+					agk::DeleteMemblock(packet->data);
+					delete packet;
+					return;
+				}
+
 				// Add fragment to the fragment map
-				connection->fragmentMap[packet->base_sequence].push_back(packet);
+				list.push_back(packet);
 				SendAcknowledgment(connection, packet->sequence);
 				// Don't increment inboundSequence here - fragments are out of normal flow
 
@@ -685,6 +700,8 @@ void RUDPListener::SendAcknowledgment(Connection* connection, const int sequence
 	agk::AddNetworkMessageString(message, listenerUUID.c_str());
 	agk::AddNetworkMessageInteger(message, sequence);
 	agk::SendUDPNetworkMessage(AGKListener, message, connection->ip.c_str(), connection->port);
+
+	OutputDebugStringA(("Sent ACK for sequence " + std::to_string(sequence) + " to " + connection->ip + ":" + std::to_string(connection->port) + "\n").c_str());
 }
 
 void RUDPListener::SendDataMessage(Connection* connection, Packet* packet) const
@@ -801,7 +818,8 @@ RUDPListener::Packet* RUDPListener::EncodeFragmentPacket(ConnectionUUID uuid, un
 	packet->size = size;
 
 	// Create a memblock for this fragment only
-	unsigned int fragmentMemblock = agk::CreateMemblock(size);
+	unsigned int fragmentMemblock = GetMemblockID();
+	agk::CreateMemblock(fragmentMemblock, size);
 
 	// Optimize: Copy 4 bytes at a time when aligned
 	int numInts = size / 4;
@@ -871,7 +889,8 @@ void RUDPListener::ReassembleFragments(Connection* connection)
 			if (all_present)
 			{
 				// Create combined memblock
-				unsigned int combinedMemblock = agk::CreateMemblock(total_size);
+				unsigned int combinedMemblock = GetMemblockID();
+				agk::CreateMemblock(combinedMemblock, total_size);
 
 				int offset = 0;
 				for (Packet* fragment : fragments)
@@ -905,7 +924,8 @@ void RUDPListener::ReassembleFragments(Connection* connection)
 				reassembled->data = combinedMemblock;
 				reassembled->is_fragment = false;
 
-				// Preserve fragment count so UpdatePendingMessages can increment sequence correctly
+                // Preserve fragment count so UpdatePendingMessages can advance inboundSequence
+				// by the full fragment group size.
 				reassembled->total_fragments = total_fragments;
 
 				RUDP_DEBUG(("Reassembled packet created: sequence=" + std::to_string(base_seq) + 
@@ -952,7 +972,8 @@ RUDPListener::Packet* RUDPListener::DecodeMessage(unsigned int message)
 		packet->total_size = agk::GetNetworkMessageInteger(message);
 	}
 
-	unsigned int memblock = agk::CreateMemblock(packet->size);
+	unsigned int memblock = GetMemblockID();
+	agk::CreateMemblock(memblock, packet->size);
 
 	// Optimize: Write 4 bytes at a time from network message
 	int numInts = packet->size / 4;
@@ -983,7 +1004,7 @@ RUDPListener::Packet* RUDPListener::DecodeMessage(unsigned int message)
 
 	delete packet;
 	agk::DeleteMemblock(memblock);	
-
+	OutputDebugStringA("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!PACKET THROWN AWAY!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
 	return nullptr; //Throw away message if hash doesn't match
 }
 

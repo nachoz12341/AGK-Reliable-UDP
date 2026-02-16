@@ -64,7 +64,7 @@ class RUDPListener {
 			bool is_fragment = false;
 			int base_sequence = -1;      // Base sequence ID for the fragmented message group
 			int fragment_index = -1;     // Which fragment (0, 1, 2...)
-			int total_fragments = -1;    // Total number of fragments in the group
+          int total_fragments = -1;    // Total number of fragments in the group (also used on reassembled packets to indicate how many sequence numbers to advance)
 			int total_size = -1;         // Original message size before fragmentation
 		} Packet;
 
@@ -96,33 +96,15 @@ class RUDPListener {
 			}
 			~Connection() 
 			{
-				for (Packet* packet : readyPackets) 
-				{
-					delete packet;
-				}
-
-				for (Packet* packet : pendingPackets)
-				{
-					delete packet;
-				}
-
-				for (auto& pair : outboundPackets)
-				{
-					delete pair.second;
-				}
-
-				for (Packet* packet : queuedOutbound)
-				{
-					delete packet;
-				}
-
-				// Clean up fragmentMap
+                // Note: `RUDPListener` owns and frees packet memblocks; this destructor only
+				// deletes packet pointers that remain referenced.
+				for (Packet* packet : readyPackets) delete packet;
+				for (Packet* packet : pendingPackets) delete packet;
+				for (auto& pair : outboundPackets) delete pair.second;
+				for (Packet* packet : queuedOutbound) delete packet;
 				for (auto& fragmentEntry : fragmentMap)
 				{
-					for (Packet* packet : fragmentEntry.second)
-					{
-						delete packet;
-					}
+					for (Packet* packet : fragmentEntry.second) delete packet;
 				}
 			}
 		}Connection;
